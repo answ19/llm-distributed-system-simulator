@@ -35,3 +35,18 @@ This project provides a reproducible framework to compare control policies in th
 ### Install
 ```bash
 pip install -r requirements.txt
+
+### Run
+```bash
+pip install simpy matplotlib
+python simulator.py
+
+That’s it.
+
+---
+
+## Tiny safety tip (recommended)
+Before making changes, create a branch:
+
+```powershell
+git checkout -b week2-polish
