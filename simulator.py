@@ -3,7 +3,7 @@ import random
 from dataclasses import dataclass, field
 from typing import List, Callable, Optional
 import matplotlib.pyplot as plt
-
+import os, csv
 
 @dataclass
 class Job:
@@ -49,12 +49,12 @@ class Server:
             # Notify client
             job.done_event.succeed(end)
 
-
+      
 class LoadBalancer:
     """
     Routes jobs to servers according to a policy.
     Policy signature:
-      policy(servers, rr_state) -> chosen_server_index
+      policy(state, rr_index) -> (chosen_server_index, new_rr_index)
     """
     def __init__(self, servers: List[Server], policy: Callable):
         self.servers = servers
@@ -62,35 +62,50 @@ class LoadBalancer:
         self.rr_index = 0  # state for round-robin
 
     def route(self, job: Job):
-        idx, self.rr_index = self.policy(self.servers, self.rr_index)
-        self.servers[idx].queue.put(job)
+        # Build a simple snapshot of the system state for policies (and future LLM)
+        state = {
+            "time": self.env.now if hasattr(self, "env") else None,
+            "servers": [
+                {"up": s.is_up, "queue_len": len(s.queue.items)}
+                for s in self.servers
+            ],
+        }
+        state = {
+            "servers": [{"up": s.is_up, "queue_len": len(s.queue.items)} for s in self.servers]
+            }
+        idx, self.rr_index = self.policy(state, self.rr_index)
 
+        # IMPORTANT: actually send the job to the chosen server
+        self.servers[idx].queue.put(job)
 
 # ---- Policies ----
 
-def policy_random(servers: List[Server], rr_index: int):
-    idx = random.randrange(len(servers))
+def policy_random(state, rr_index: int):
+    n = len(state["servers"])
+    idx = random.randrange(n)
     return idx, rr_index
 
-def policy_round_robin(servers: List[Server], rr_index: int):
-    idx = rr_index % len(servers)
-    rr_index = (rr_index + 1) % len(servers)
+
+def policy_round_robin(state, rr_index: int):
+    n = len(state["servers"])
+    idx = rr_index % n
+    rr_index = (rr_index + 1) % n
     return idx, rr_index
 
-def policy_shortest_queue(servers: List[Server], rr_index: int):
-    # Choose the smallest queue length among UP servers; fallback if all down
-    best_idx: Optional[int] = None
+
+def policy_shortest_queue(state, rr_index: int):
+    best_idx = None
     best_len = 10**9
-    for i, s in enumerate(servers):
-        if s.is_up:
-            qlen = len(s.queue.items)
-            if qlen < best_len:
-                best_len = qlen
-                best_idx = i
+
+    for i, s in enumerate(state["servers"]):
+        if s["up"] and s["queue_len"] < best_len:
+            best_len = s["queue_len"]
+            best_idx = i
+
     if best_idx is None:
         best_idx = 0
-    return best_idx, rr_index
 
+    return best_idx, rr_index
 
 # ---- Client process ----
 
@@ -225,7 +240,14 @@ if __name__ == "__main__":
         for sd in seeds:
             res = run_simulation(seed=sd, policy_name=pol)
             all_results.append(res)
+    
+os.makedirs("results", exist_ok=True)
+with open("results/runs.csv", "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=all_results[0].keys())
+    writer.writeheader()
+    writer.writerows(all_results)
 
+    print("Saved results to results/runs.csv")
     # Print a simple summary: average p95 latency per policy
     summary = {}
     for pol in policies:
@@ -246,4 +268,10 @@ plt.ylabel("Average p95 latency")
 plt.title("Policy Comparison Under Failures")
 plt.xticks(rotation=20)
 plt.tight_layout()
+os.makedirs("assets", exist_ok=True)
+
+plt.savefig("assets/p95_bar.png", dpi=200)
+print("Saved plot to assets/p95_bar.png")
+
 plt.show()
+
